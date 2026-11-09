@@ -1,2 +1,5 @@
+greenlet==3.5.6
 numpy==2.2.6
 opencv-python==5.0.0.93
+SQLAlchemy==2.0.57
+typing_extensions==4.16.0

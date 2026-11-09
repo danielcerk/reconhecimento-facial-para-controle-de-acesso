@@ -1,9 +1,4 @@
-# Reconhecimento Facil OpenCV
-
-<p align="center">
-    <img src="img/exemplo.png" alt="Exemplo" height="500px">
-</p>
-Projeto de reconhecimento facil com OpenCV - após treinamento das faces pelo algoritmo será capaz de fazer a detecção por frame
+# Reconhecimento Facial OpenCV para controle de acesso
 
 ## Começando
 
@@ -56,13 +51,3 @@ python treinamento.py
 ```
 python reconhecedor_eigenfaces.py || python reconhecedor_fisherfaces.py || python reconhecedor_lbph.py
 ```
-
-## Built With
-
-* [OpenCV](https://pypi.org/project/opencv-contrib-python/) - OpenCV
-* [Numpy](https://numpy.org/) - Numpy
-* [Python](https://www.python.org/) - Python
-
-## Authors
-
-* **David Lucas** - *Initial work* - [david-luk4s](https://github.com/david-luk4s)
