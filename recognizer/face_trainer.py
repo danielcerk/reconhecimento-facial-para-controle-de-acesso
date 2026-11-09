@@ -4,7 +4,7 @@ import cv2
 
 from pathlib import Path
 
-from ..db import obter_sessao, Usuario
+from access_control.db import obter_sessao, Usuario
 from .face_detector import FaceDetector
 
 

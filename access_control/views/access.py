@@ -6,7 +6,7 @@ import cv2
 
 from PIL import Image, ImageTk
 
-from ..access_control.access_service import AccessService
+from access_control.access_service import AccessService
 
 
 class Catraca(ttk.Frame):

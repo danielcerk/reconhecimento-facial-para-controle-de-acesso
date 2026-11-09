@@ -1,7 +1,7 @@
 
 import time
 
-from db import obter_sessao, Usuario, HistoricoAcesso
+from access_control.db import obter_sessao, Usuario, HistoricoAcesso
 from recognizer.face_recognizer import FaceRecognizer
 
 

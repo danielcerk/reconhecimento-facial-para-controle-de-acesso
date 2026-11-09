@@ -4,7 +4,7 @@ import cv2
 
 from pathlib import Path
 
-from .face_detector import FaceDetector
+from face_detector import FaceDetector
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
