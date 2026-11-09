@@ -90,8 +90,6 @@ class App(tk.Tk):
             self.sidebar
         ).pack(fill="x", padx=15, pady=10)
 
-        self.criar_menu("Minha conta", "conta")
-
         self.container = ttk.Frame(self)
         self.container.pack(
             side="right",
