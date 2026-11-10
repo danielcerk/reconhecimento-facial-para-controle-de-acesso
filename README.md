@@ -1,0 +1,53 @@
+# Reconhecimento Facial OpenCV para controle de acesso
+
+## Começando
+
+Primeiro será necessário realizar a detecção da face e capturar as fotos para o treinamento executando o "dectect_face.py"
+Depois será feito o treinamento das face capturadas com o "treinamento.py"
+E no final você poderá escolher quais dos 3 algoritmos (Eigenface, Fisherface ou LBPH) usará para fazer o reconhecimento
+
+### Pré-requisitos
+
+Instale todas as dependências do requirements.txt com PIP
+
+
+### Instalação
+
+Crie um virtual env para empacotar suas libs Python
+
+```
+python -m venv venv
+```
+
+Ative sua virtual env
+
+```
+source venv/bin/active
+```
+
+Use o PIP, gerenciador de pacotes do Python para instalar todos os requisitos
+
+```
+pip install -r requirements.txt
+```
+
+## Uso do programa
+
+1 - Primeiro faça as capturas salvando as imagens das faces detectadas:
+
+```
+python detect_face.py
+```
+digite um numero para ser o identificador da face e clique na tecla "q" para salvar a imagem da face detectada.
+
+
+2 - Faça o apredizado das faces detectadas:
+
+```
+python treinamento.py
+```
+3 - Execute o reconhecedor facil
+
+```
+python reconhecedor_eigenfaces.py || python reconhecedor_fisherfaces.py || python reconhecedor_lbph.py
+```
