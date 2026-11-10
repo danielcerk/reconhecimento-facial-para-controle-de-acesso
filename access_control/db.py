@@ -30,7 +30,7 @@ PASTA_FOTOS = BASE_DIR / "fotos"
 PRIMEIRO_USUARIO = {
     "nome": "Administrador",
     "matricula": "0001",
-    "foto": str(BASE_DIR / "imagens" / "administrador.jpg"),
+    "foto": str(BASE_DIR / "imagens" / "administrador.png"),
     "ativo": True
 }
 
