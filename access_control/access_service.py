@@ -1,11 +1,20 @@
 
 import time
 
-from access_control.db import obter_sessao, Usuario, HistoricoAcesso
+from access_control.db import (
+    obter_sessao,
+    Usuario,
+    HistoricoAcesso
+)
+
 from recognizer.face_recognizer import FaceRecognizer
 
 
+MOTIVO_LIBERACAO_INICIAL = "LIBERACAO_INICIAL_ADMIN"
+
+
 class AccessService:
+
     def __init__(self, intervalo=8):
         self.recognizer = FaceRecognizer()
         self.intervalo = intervalo
@@ -15,18 +24,28 @@ class AccessService:
         return self.recognizer.carregar_modelo()
 
     def reconstruir_modelo(self):
-        from ..recognizer.face_trainer import treinar_modelo
+        quantidade = self.recognizer.carregar_modelo()
 
-        resultado = treinar_modelo()
-
-        if resultado["sucesso"]:
-            self.recarregar_modelo()
-
-        return resultado
+        return {
+            "sucesso": True,
+            "quantidade": self.recognizer.quantidade_vetores(),
+            "mensagem": (
+                f"Reconhecimento atualizado com "
+                f"{self.recognizer.quantidade_vetores()} "
+                f"vetores faciais."
+                if quantidade
+                else "Nenhum vetor facial cadastrado."
+            )
+        }
 
     def _registrar(self, usuario_id, autorizado, motivo):
         agora = time.monotonic()
-        chave = usuario_id if usuario_id is not None else "desconhecido"
+
+        chave = (
+            usuario_id
+            if usuario_id is not None
+            else "desconhecido"
+        )
 
         ultimo = self.ultimos_registros.get(chave, 0)
 
@@ -47,6 +66,86 @@ class AccessService:
 
         return True
 
+    def _obter_administrador_inicial(self, db):
+        return (
+            db.query(Usuario)
+            .order_by(Usuario.id.asc())
+            .first()
+        )
+
+    def _liberacao_inicial_disponivel(self, db):
+        registro = (
+            db.query(HistoricoAcesso)
+            .filter(
+                HistoricoAcesso.motivo == MOTIVO_LIBERACAO_INICIAL
+            )
+            .first()
+        )
+
+        return registro is None
+
+    def _processar_primeiro_acesso(self, reconhecimento):
+        embedding = reconhecimento.get("embedding")
+
+        if embedding is None:
+            return None
+
+        with obter_sessao() as db:
+            administrador = self._obter_administrador_inicial(db)
+
+            if administrador is None:
+                return None
+
+            possui_vetores = self.recognizer.possui_vetores_usuario(
+                administrador.id
+            )
+
+            if possui_vetores:
+                return None
+
+            if not self._liberacao_inicial_disponivel(db):
+                return None
+
+            administrador_id = administrador.id
+            nome = administrador.nome
+            matricula = administrador.matricula
+            ativo = administrador.ativo
+
+        if not ativo:
+            return {
+                "status": "negado",
+                "nome": nome,
+                "matricula": matricula,
+                "usuario_id": administrador_id,
+                "distancia": None,
+                "rosto": reconhecimento["rosto"],
+                "registrado": False,
+                "motivo": "Administrador inicial inativo"
+            }
+
+        registrado = self._registrar(
+            administrador_id,
+            True,
+            MOTIVO_LIBERACAO_INICIAL
+        )
+
+        if not registrado:
+            return None
+
+        return {
+            "status": "cadastro_admin",
+            "nome": nome,
+            "matricula": matricula,
+            "usuario_id": administrador_id,
+            "distancia": None,
+            "rosto": reconhecimento["rosto"],
+            "registrado": True,
+            "motivo": (
+                "Primeiro acesso liberado. "
+                "Cadastre imediatamente a face do administrador."
+            )
+        }
+
     def processar_frame(self, frame):
         reconhecimento = self.recognizer.reconhecer(frame)
 
@@ -56,12 +155,20 @@ class AccessService:
             "matricula": None,
             "usuario_id": None,
             "distancia": reconhecimento["distancia"],
+            "similaridade": reconhecimento.get("similaridade"),
             "rosto": reconhecimento["rosto"],
             "registrado": False,
             "motivo": "Rosto não reconhecido"
         }
 
         if not reconhecimento["reconhecido"]:
+            primeiro_acesso = self._processar_primeiro_acesso(
+                reconhecimento
+            )
+
+            if primeiro_acesso is not None:
+                return primeiro_acesso
+
             if reconhecimento["rosto"] is not None:
                 resultado["registrado"] = self._registrar(
                     None,
@@ -82,7 +189,9 @@ class AccessService:
                     False,
                     "Usuário não encontrado"
                 )
+
                 resultado["motivo"] = "Usuário não encontrado"
+
                 return resultado
 
             resultado["nome"] = usuario.nome
@@ -92,13 +201,10 @@ class AccessService:
             if not usuario.ativo:
                 resultado["status"] = "negado"
                 resultado["motivo"] = "Usuário inativo"
-
             else:
                 resultado["status"] = "autorizado"
                 resultado["motivo"] = "Acesso autorizado"
 
-            nome = usuario.nome
-            matricula = usuario.matricula
             ativo = usuario.ativo
 
         resultado["registrado"] = self._registrar(

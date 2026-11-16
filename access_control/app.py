@@ -10,21 +10,23 @@ class App(tk.Tk):
         self.title("Simulador de Catraca")
         self.geometry("1200x750")
         self.minsize(950, 600)
-
         self.configure(bg="#f5f5f5")
 
         self.frames = {}
         self.tela_atual = None
+        self.botoes_menu = []
 
         # Controle de autorização
         self.acesso_liberado = False
+        self.modo_configuracao = False
+        self.administrador_id = None
 
         self.configurar_estilos()
         self.criar_layout()
         self.registrar_telas()
 
-        # Começa obrigatoriamente na catraca
-        self.mostrar_tela("catraca")
+        # Verifica se o administrador já possui face cadastrada
+        self.verificar_configuracao_inicial()
 
     def configurar_estilos(self):
         style = ttk.Style(self)
@@ -66,7 +68,6 @@ class App(tk.Tk):
         )
 
     def criar_layout(self):
-
         self.sidebar = ttk.Frame(
             self,
             style="Sidebar.TFrame",
@@ -82,8 +83,6 @@ class App(tk.Tk):
             style="Sidebar.TLabel",
             justify="center"
         ).pack(fill="x", pady=30)
-
-        self.botoes_menu = []
 
         self.criar_menu("Dashboard", "dashboard")
         self.criar_menu("Usuários", "usuarios")
@@ -107,7 +106,6 @@ class App(tk.Tk):
         )
 
     def criar_menu(self, texto, tela):
-
         botao = ttk.Button(
             self.sidebar,
             text=texto,
@@ -116,11 +114,9 @@ class App(tk.Tk):
         )
 
         botao.pack(fill="x", padx=12, pady=3)
-
-        self.botoes_menu.append(botao)
+        self.botoes_menu.append((tela, botao))
 
     def registrar_telas(self):
-
         from .views.dashboard import Dashboard
         from .views.user import Usuarios
         from .views.access import Catraca
@@ -132,7 +128,6 @@ class App(tk.Tk):
         }
 
         for nome, classe in telas.items():
-
             frame = classe(self.container, self)
 
             frame.place(
@@ -144,54 +139,146 @@ class App(tk.Tk):
 
             self.frames[nome] = frame
 
-    def mostrar_tela(self, nome, **kwargs):
+    def verificar_configuracao_inicial(self):
+        from access_control.db import obter_sessao, Usuario
 
+        recognizer = self.frames["catraca"].servico.recognizer
+
+        with obter_sessao() as db:
+            administrador = (
+                db.query(Usuario)
+                .order_by(Usuario.id.asc())
+                .first()
+            )
+
+            if administrador is None:
+                self.modo_configuracao = True
+                self.mostrar_tela("usuarios")
+                return
+
+            self.administrador_id = administrador.id
+
+            possui_vetor = recognizer.possui_vetores_usuario(
+                administrador.id
+            )
+
+        if not possui_vetor:
+            self.modo_configuracao = True
+
+            self.mostrar_tela(
+                "usuarios",
+                usuario_id=self.administrador_id
+            )
+
+            return
+
+        # Administrador já possui cadastro facial
+        self.modo_configuracao = False
+
+        self.atualizar_menu()
+        self.mostrar_tela("catraca")
+
+    def mostrar_tela(self, nome, **kwargs):
         if nome not in self.frames:
             raise ValueError(f"Tela não encontrada: {nome}")
 
-        # Bloqueia navegação antes da autorização
-        if not self.acesso_liberado and nome != "catraca":
-            return
+        if self.modo_configuracao:
+            telas_permitidas = ["usuarios"]
+        elif self.acesso_liberado:
+            telas_permitidas = ["dashboard", "usuarios"]
+        else:
+            telas_permitidas = ["catraca"]
+
+        if nome not in telas_permitidas:
+            return False
 
         if self.tela_atual:
-
             atual = self.frames[self.tela_atual]
 
             if hasattr(atual, "ao_ocultar"):
                 atual.ao_ocultar()
 
         frame = self.frames[nome]
-
         frame.tkraise()
         self.tela_atual = nome
 
         if hasattr(frame, "ao_mostrar"):
             frame.ao_mostrar(**kwargs)
 
-    def liberar_acesso(self, usuario=None):
+        return True
 
+    def finalizar_configuracao_inicial(self):
+        """
+        Executar após salvar o vetor facial
+        do administrador no banco.
+        """
+
+        from access_control.db import obter_sessao, Usuario
+
+        with obter_sessao() as db:
+            administrador = (
+                db.query(Usuario)
+                .order_by(Usuario.id.asc())
+                .first()
+            )
+
+            if administrador is None:
+                return False
+
+            administrador_id = administrador.id
+
+        recognizer = self.frames["catraca"].servico.recognizer
+
+        possui_vetor = recognizer.possui_vetores_usuario(
+            administrador_id
+        )
+
+        if not possui_vetor:
+            return False
+
+        # Atualiza o modelo facial
+        recognizer.carregar_modelo()
+
+        self.administrador_id = administrador_id
+        self.modo_configuracao = False
+
+        # Mantém a catraca como tela inicial de operação
+        self.mostrar_tela("catraca")
+
+        return True
+
+    def atualizar_menu(self):
+        for tela, botao in self.botoes_menu:
+            if self.modo_configuracao:
+                permitido = tela == "usuarios"
+            elif self.acesso_liberado:
+                permitido = tela in ["dashboard", "usuarios"]
+            else:
+                permitido = tela == "catraca"
+
+            botao.configure(
+                state="normal" if permitido else "disabled"
+            )
+
+    def liberar_acesso(self, usuario=None):
         if self.acesso_liberado:
             return
 
         self.acesso_liberado = True
 
-        # Libera os menus
-        for botao in self.botoes_menu:
-            botao.configure(state="normal")
+        self.atualizar_menu()
+
+        self.mostrar_tela("dashboard")
 
         print("Acesso ao sistema liberado!")
 
-        self.mostrar_tela("dashboard", usuario=usuario)
-
     def abrir_usuario(self, usuario_id=None):
-
         self.mostrar_tela(
             "usuarios",
             usuario_id=usuario_id
         )
 
     def adicionar_tela(self, nome, classe):
-
         if nome in self.frames:
             return False
 
@@ -209,21 +296,25 @@ class App(tk.Tk):
         return True
 
     def remover_tela(self, nome):
-
         if nome not in self.frames:
             return False
 
         if self.tela_atual == nome:
-            self.mostrar_tela("dashboard")
+            destino = (
+                "usuarios"
+                if self.modo_configuracao
+                else "catraca"
+            )
+
+            if nome != destino:
+                self.mostrar_tela(destino)
 
         self.frames[nome].destroy()
-
         del self.frames[nome]
 
         return True
 
 
 if __name__ == "__main__":
-
     app = App()
     app.mainloop()

@@ -1,8 +1,8 @@
 
 from datetime import datetime
 from pathlib import Path
-from uuid import uuid4
-import shutil
+
+import numpy as np
 
 from sqlalchemy import (
     create_engine,
@@ -12,25 +12,19 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    LargeBinary,
     inspect
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
 
-# ==========================================
-# CONFIGURAÇÕES
-# ==========================================
-
 BASE_DIR = Path(__file__).resolve().parent
 
 DATABASE_URL = "sqlite:///sistema_catraca.db"
 
-PASTA_FOTOS = BASE_DIR / "fotos"
-
 PRIMEIRO_USUARIO = {
     "nome": "Administrador",
     "matricula": "0001",
-    "foto": str(BASE_DIR / "imagens" / "administrador.png"),
     "ativo": True
 }
 
@@ -48,19 +42,12 @@ SessionLocal = sessionmaker(
 
 Base = declarative_base()
 
-
-# ==========================================
-# MODELOS
-# ==========================================
-
 class Usuario(Base):
     __tablename__ = "usuarios"
 
     id = Column(Integer, primary_key=True, index=True)
     nome = Column(String(150), nullable=False)
     matricula = Column(String(50), unique=True, nullable=False)
-    foto = Column(String(500), nullable=True)
-    foto_origem = Column(String(500), nullable=True)
 
     ativo = Column(Boolean, default=True, nullable=False)
     criado_em = Column(DateTime, default=datetime.now)
@@ -69,6 +56,38 @@ class Usuario(Base):
         "HistoricoAcesso",
         back_populates="usuario",
         cascade="all, delete-orphan"
+    )
+
+    vetores_faciais = relationship(
+        "VetorFacial",
+        back_populates="usuario",
+        cascade="all, delete-orphan"
+    )
+
+
+class VetorFacial(Base):
+    __tablename__ = "vetores_faciais"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    usuario_id = Column(
+        Integer,
+        ForeignKey("usuarios.id"),
+        nullable=False,
+        index=True
+    )
+
+    vetor = Column(LargeBinary, nullable=False)
+
+    criado_em = Column(
+        DateTime,
+        default=datetime.now,
+        nullable=False
+    )
+
+    usuario = relationship(
+        "Usuario",
+        back_populates="vetores_faciais"
     )
 
 
@@ -83,7 +102,12 @@ class HistoricoAcesso(Base):
         nullable=True
     )
 
-    data_hora = Column(DateTime, default=datetime.now, nullable=False)
+    data_hora = Column(
+        DateTime,
+        default=datetime.now,
+        nullable=False
+    )
+
     autorizado = Column(Boolean, nullable=False)
     motivo = Column(String(255), nullable=True)
 
@@ -92,61 +116,97 @@ class HistoricoAcesso(Base):
         back_populates="acessos"
     )
 
-
-# ==========================================
-# INICIALIZAÇÃO DO BANCO
-# ==========================================
-
 def criar_tabelas():
     Base.metadata.create_all(bind=engine)
-
-    # Compatibilidade com bancos já existentes
-    colunas = [
-        coluna["name"]
-        for coluna in inspect(engine).get_columns("usuarios")
-    ]
-
-    if "foto_origem" not in colunas:
-        with engine.begin() as conexao:
-            conexao.exec_driver_sql(
-                "ALTER TABLE usuarios ADD COLUMN foto_origem VARCHAR(500)"
-            )
 
 
 def obter_sessao():
     return SessionLocal()
 
+def converter_vetor_bytes(vetor):
+    vetor = np.asarray(vetor, dtype=np.float32)
 
-# ==========================================
-# GERENCIAMENTO DE FOTOS
-# ==========================================
+    if vetor.ndim != 1 or vetor.size == 0:
+        raise ValueError("Vetor facial inválido.")
 
-def salvar_foto(caminho_origem):
-    if not caminho_origem:
-        return None
+    if not np.all(np.isfinite(vetor)):
+        raise ValueError("O vetor contém valores inválidos.")
 
-    origem = Path(caminho_origem)
+    return vetor.tobytes()
 
-    if not origem.is_file():
-        raise FileNotFoundError(
-            f"Foto não encontrada: {caminho_origem}"
+
+def converter_bytes_vetor(dados):
+    return np.frombuffer(
+        dados,
+        dtype=np.float32
+    ).copy()
+
+def salvar_vetor_facial(usuario_id, vetor):
+
+    vetor_bytes = converter_vetor_bytes(vetor)
+
+    with obter_sessao() as db:
+
+        usuario = db.get(Usuario, usuario_id)
+
+        if not usuario:
+            raise ValueError("Usuário não encontrado.")
+
+        registro = VetorFacial(
+            usuario_id=usuario_id,
+            vetor=vetor_bytes
         )
 
-    PASTA_FOTOS.mkdir(parents=True, exist_ok=True)
+        db.add(registro)
+        db.commit()
+        db.refresh(registro)
 
-    # Nome aleatório para a imagem
-    nome_aleatorio = f"{uuid4().hex}{origem.suffix}"
-
-    destino = PASTA_FOTOS / nome_aleatorio
-
-    shutil.copy2(origem, destino)
-
-    return str(destino)
+        return registro.id
 
 
-# ==========================================
-# PRIMEIRO USUÁRIO AUTOMÁTICO
-# ==========================================
+def listar_vetores_faciais(usuario_id):
+
+    with obter_sessao() as db:
+
+        registros = db.query(VetorFacial).filter(
+            VetorFacial.usuario_id == usuario_id
+        ).all()
+
+        return [
+            converter_bytes_vetor(registro.vetor)
+            for registro in registros
+        ]
+
+
+def listar_todos_vetores_faciais():
+
+    with obter_sessao() as db:
+
+        registros = db.query(VetorFacial).join(
+            Usuario
+        ).filter(
+            Usuario.ativo.is_(True)
+        ).all()
+
+        return [
+            {
+                "id": registro.id,
+                "usuario_id": registro.usuario_id,
+                "vetor": converter_bytes_vetor(registro.vetor)
+            }
+            for registro in registros
+        ]
+
+
+def excluir_vetores_faciais(usuario_id):
+
+    with obter_sessao() as db:
+
+        db.query(VetorFacial).filter(
+            VetorFacial.usuario_id == usuario_id
+        ).delete(synchronize_session=False)
+
+        db.commit()
 
 
 def inicializar_primeiro_usuario():
@@ -159,21 +219,9 @@ def inicializar_primeiro_usuario():
             Usuario.id.asc()
         ).first()
 
-        # Se não existir nenhum usuário, cria o administrador
         if usuario is None:
 
-            caminho_foto = None
-
-            if dados.get("foto"):
-                caminho_foto = salvar_foto(dados["foto"])
-
-            usuario = Usuario(
-                nome=dados["nome"],
-                matricula=dados["matricula"],
-                foto=caminho_foto,
-                foto_origem=dados.get("foto"),
-                ativo=dados["ativo"]
-            )
+            usuario = Usuario(**dados)
 
             db.add(usuario)
             db.commit()
@@ -183,70 +231,52 @@ def inicializar_primeiro_usuario():
 
             return usuario.id
 
-        # Se já existir, verifica alterações
         alterado = False
 
-        for campo in ("nome", "matricula", "ativo"):
+        for campo, valor in dados.items():
 
-            if getattr(usuario, campo) != dados[campo]:
-                setattr(usuario, campo, dados[campo])
+            if getattr(usuario, campo) != valor:
+                setattr(usuario, campo, valor)
                 alterado = True
-
-        nova_origem = dados.get("foto")
-
-        if usuario.foto_origem != nova_origem:
-
-            nova_foto = None
-
-            if nova_origem:
-                nova_foto = salvar_foto(nova_origem)
-
-            usuario.foto = nova_foto
-            usuario.foto_origem = nova_origem
-
-            alterado = True
 
         if alterado:
             db.commit()
             print("Administrador atualizado!")
-        else:
-            print("Administrador já está atualizado!")
 
         return usuario.id
 
-
-
-# ==========================================
-# CADASTRO DE USUÁRIO
-# ==========================================
-
-def cadastrar_usuario(nome, matricula, foto=None):
-
-    caminho_foto = salvar_foto(foto) if foto else None
+def cadastrar_usuario(nome, matricula, vetores=None):
 
     with obter_sessao() as db:
 
         usuario = Usuario(
             nome=nome,
-            matricula=matricula,
-            foto=caminho_foto,
-            foto_origem=foto
+            matricula=matricula
         )
 
         db.add(usuario)
+        db.flush()
+
+        if vetores is not None:
+
+            for vetor in vetores:
+
+                registro = VetorFacial(
+                    usuario_id=usuario.id,
+                    vetor=converter_vetor_bytes(vetor)
+                )
+
+                db.add(registro)
+
         db.commit()
         db.refresh(usuario)
 
         return usuario.id
 
-
-# ==========================================
-# CONSULTAS
-# ==========================================
-
 def buscar_usuario(matricula):
 
     with obter_sessao() as db:
+
         return db.query(Usuario).filter(
             Usuario.matricula == matricula
         ).first()
@@ -255,14 +285,10 @@ def buscar_usuario(matricula):
 def listar_usuarios():
 
     with obter_sessao() as db:
+
         return db.query(Usuario).order_by(
             Usuario.nome
         ).all()
-
-
-# ==========================================
-# HISTÓRICO DE ACESSOS
-# ==========================================
 
 def registrar_acesso(usuario_id, autorizado, motivo=None):
 
@@ -276,6 +302,7 @@ def registrar_acesso(usuario_id, autorizado, motivo=None):
 
         db.add(acesso)
         db.commit()
+        db.refresh(acesso)
 
         return acesso.id
 
@@ -283,19 +310,17 @@ def registrar_acesso(usuario_id, autorizado, motivo=None):
 def listar_historico(limite=100):
 
     with obter_sessao() as db:
+
         return db.query(HistoricoAcesso).order_by(
             HistoricoAcesso.data_hora.desc()
         ).limit(limite).all()
 
-
-# ==========================================
-# ATUALIZAR USUÁRIO
-# ==========================================
-
 def atualizar_usuario(usuario_id, **dados):
 
     campos_permitidos = {
-        "nome", "matricula", "foto", "ativo"
+        "nome",
+        "matricula",
+        "ativo"
     }
 
     with obter_sessao() as db:
@@ -307,24 +332,12 @@ def atualizar_usuario(usuario_id, **dados):
 
         for campo, valor in dados.items():
 
-            if campo not in campos_permitidos:
-                continue
-
-            if campo == "foto":
-                usuario.foto = salvar_foto(valor) if valor else None
-                usuario.foto_origem = valor
-
-            else:
+            if campo in campos_permitidos:
                 setattr(usuario, campo, valor)
 
         db.commit()
 
         return True
-
-
-# ==========================================
-# EXCLUIR USUÁRIO
-# ==========================================
 
 def excluir_usuario(usuario_id):
 
@@ -339,11 +352,6 @@ def excluir_usuario(usuario_id):
         db.commit()
 
         return True
-
-
-# ==========================================
-# INICIALIZAÇÃO DO SISTEMA
-# ==========================================
 
 if __name__ == "__main__":
 

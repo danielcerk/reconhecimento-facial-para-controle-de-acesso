@@ -1,14 +1,58 @@
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
-from datetime import datetime
+from tkinter import ttk, messagebox
+from pathlib import Path
 
+import cv2
+import numpy as np
+from PIL import Image, ImageTk
 from sqlalchemy.exc import IntegrityError
 
-from ..db import obter_sessao, Usuario
+from ..db import (
+    obter_sessao,
+    Usuario,
+    cadastrar_usuario,
+    salvar_vetor_facial,
+    excluir_vetores_faciais,
+    listar_vetores_faciais,
+)
+
+
+BASE_DIR = Path(__file__).resolve().parents[2]
+CASCADE_DIR = BASE_DIR / "recognizer" / "cascades"
+
+FACE_CASCADE_PATH = CASCADE_DIR / "haarcascade_frontalface_default.xml"
+EYE_CASCADE_PATH = CASCADE_DIR / "haarcascade_eye_tree_eyeglasses.xml"
+
+face_cascade = cv2.CascadeClassifier(str(FACE_CASCADE_PATH))
+eye_cascade = cv2.CascadeClassifier(str(EYE_CASCADE_PATH))
+
+if face_cascade.empty():
+    raise RuntimeError(f"Não foi possível carregar: {FACE_CASCADE_PATH}")
+
+if eye_cascade.empty():
+    raise RuntimeError(f"Não foi possível carregar: {EYE_CASCADE_PATH}")
+
+face_analysis = None
+
+
+def obter_modelo_facial():
+    global face_analysis
+
+    if face_analysis is None:
+        from insightface.app import FaceAnalysis
+
+        face_analysis = FaceAnalysis(
+            name="buffalo_l",
+            providers=["CPUExecutionProvider"]
+        )
+        face_analysis.prepare(ctx_id=-1, det_size=(640, 640))
+
+    return face_analysis
 
 
 class Usuarios(ttk.Frame):
+
     def __init__(self, parent, app):
         super().__init__(parent)
 
@@ -17,11 +61,20 @@ class Usuarios(ttk.Frame):
         self.usuario_id = None
         self.modo = "lista"
 
-        self.configure(padding=25)
+        self.camera = None
+        self.camera_aberta = False
+        self.janela_camera = None
+        self.ultimo_frame = None
+        self.vetores_capturados = []
+        self.preview_camera = None
+        self.camera_after_id = None
 
+        self.configure(padding=25)
         self.mostrar_lista()
 
     def limpar_tela(self):
+        self.fechar_captura_facial()
+
         for widget in self.winfo_children():
             widget.destroy()
 
@@ -31,12 +84,9 @@ class Usuarios(ttk.Frame):
         else:
             self.mostrar_lista()
 
-    # LISTAGEM
-
     def mostrar_lista(self):
         self.modo = "lista"
         self.usuario_id = None
-
         self.limpar_tela()
 
         header = ttk.Frame(self)
@@ -64,10 +114,7 @@ class Usuarios(ttk.Frame):
             textvariable=self.busca_var,
             font=("Arial", 11)
         )
-
         busca.pack(side="left", fill="x", expand=True, ipady=7)
-
-        busca.insert(0, "")
 
         ttk.Button(
             filtros,
@@ -78,12 +125,7 @@ class Usuarios(ttk.Frame):
         tabela_frame = ttk.Frame(self)
         tabela_frame.pack(fill="both", expand=True)
 
-        colunas = (
-            "nome",
-            "matricula",
-            "status",
-            "criado"
-        )
+        colunas = ("nome", "matricula", "status", "criado")
 
         self.tabela = ttk.Treeview(
             tabela_frame,
@@ -113,25 +155,11 @@ class Usuarios(ttk.Frame):
         self.tabela.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
-        self.tabela.tag_configure(
-            "ativo",
-            foreground="#16a34a"
-        )
+        self.tabela.tag_configure("ativo", foreground="#16a34a")
+        self.tabela.tag_configure("inativo", foreground="#dc2626")
 
-        self.tabela.tag_configure(
-            "inativo",
-            foreground="#dc2626"
-        )
-
-        self.tabela.bind(
-            "<Double-1>",
-            self.abrir_selecionado
-        )
-
-        self.tabela.bind(
-            "<Return>",
-            self.abrir_selecionado
-        )
+        self.tabela.bind("<Double-1>", self.abrir_selecionado)
+        self.tabela.bind("<Return>", self.abrir_selecionado)
 
         ttk.Label(
             self,
@@ -162,7 +190,6 @@ class Usuarios(ttk.Frame):
                     "id": usuario.id,
                     "nome": usuario.nome,
                     "matricula": usuario.matricula,
-                    "foto": usuario.foto,
                     "ativo": usuario.ativo,
                     "criado_em": usuario.criado_em
                 }
@@ -205,12 +232,9 @@ class Usuarios(ttk.Frame):
                     usuario["nome"],
                     usuario["matricula"],
                     "Ativo" if usuario["ativo"] else "Inativo",
-                    criado.strftime("%d/%m/%Y %H:%M")
-                    if criado else "-"
+                    criado.strftime("%d/%m/%Y %H:%M") if criado else "-"
                 ),
-                tags=(
-                    "ativo" if usuario["ativo"] else "inativo",
-                )
+                tags=("ativo" if usuario["ativo"] else "inativo",)
             )
 
     def abrir_selecionado(self, event=None):
@@ -221,19 +245,16 @@ class Usuarios(ttk.Frame):
 
         self.mostrar_visualizacao(int(selecionado[0]))
 
-    # VISUALIZAÇÃO
-
     def mostrar_visualizacao(self, usuario_id):
+        self.fechar_captura_facial()
+
         sessao = obter_sessao()
 
         try:
             usuario = sessao.get(Usuario, usuario_id)
 
             if not usuario:
-                messagebox.showerror(
-                    "Erro",
-                    "Usuário não encontrado."
-                )
+                messagebox.showerror("Erro", "Usuário não encontrado.")
                 self.mostrar_lista()
                 return
 
@@ -241,17 +262,26 @@ class Usuarios(ttk.Frame):
                 "id": usuario.id,
                 "nome": usuario.nome,
                 "matricula": usuario.matricula,
-                "foto": usuario.foto,
                 "ativo": usuario.ativo,
                 "criado_em": usuario.criado_em
             }
+
+            quantidade_vetores = len(
+                listar_vetores_faciais(usuario_id)
+            )
+
+        except Exception as erro:
+            messagebox.showerror(
+                "Erro",
+                f"Não foi possível carregar o usuário:\n{erro}"
+            )
+            return
 
         finally:
             sessao.close()
 
         self.modo = "visualizacao"
         self.usuario_id = usuario_id
-
         self.limpar_tela()
 
         header = ttk.Frame(self)
@@ -279,11 +309,17 @@ class Usuarios(ttk.Frame):
         conteudo.pack(fill="x", anchor="n")
 
         self.adicionar_campo(
-            conteudo, "Nome completo", dados["nome"], 0
+            conteudo,
+            "Nome completo",
+            dados["nome"],
+            0
         )
 
         self.adicionar_campo(
-            conteudo, "Matrícula", dados["matricula"], 1
+            conteudo,
+            "Matrícula",
+            dados["matricula"],
+            1
         )
 
         self.adicionar_campo(
@@ -295,8 +331,8 @@ class Usuarios(ttk.Frame):
 
         self.adicionar_campo(
             conteudo,
-            "Foto",
-            dados["foto"] or "Nenhuma foto cadastrada",
+            "Amostras faciais cadastradas",
+            quantidade_vetores,
             3
         )
 
@@ -305,8 +341,7 @@ class Usuarios(ttk.Frame):
         self.adicionar_campo(
             conteudo,
             "Data de cadastro",
-            criado.strftime("%d/%m/%Y às %H:%M")
-            if criado else "-",
+            criado.strftime("%d/%m/%Y às %H:%M") if criado else "-",
             4
         )
 
@@ -329,8 +364,6 @@ class Usuarios(ttk.Frame):
 
         ttk.Separator(parent).pack(fill="x", pady=5)
 
-    # CADASTRO E EDIÇÃO
-
     def mostrar_cadastro(self):
         self.mostrar_formulario()
 
@@ -341,17 +374,13 @@ class Usuarios(ttk.Frame):
             usuario = sessao.get(Usuario, usuario_id)
 
             if not usuario:
-                messagebox.showerror(
-                    "Erro",
-                    "Usuário não encontrado."
-                )
+                messagebox.showerror("Erro", "Usuário não encontrado.")
                 self.mostrar_lista()
                 return
 
             dados = {
                 "nome": usuario.nome,
                 "matricula": usuario.matricula,
-                "foto": usuario.foto or "",
                 "ativo": usuario.ativo
             }
 
@@ -361,8 +390,11 @@ class Usuarios(ttk.Frame):
         self.mostrar_formulario(usuario_id, dados)
 
     def mostrar_formulario(self, usuario_id=None, dados=None):
+        self.fechar_captura_facial()
+
         self.modo = "formulario"
         self.usuario_id = usuario_id
+        self.vetores_capturados = []
 
         dados = dados or {}
 
@@ -393,7 +425,6 @@ class Usuarios(ttk.Frame):
         self.matricula_var = tk.StringVar(
             value=dados.get("matricula", "")
         )
-        self.foto_var = tk.StringVar(value=dados.get("foto", ""))
         self.ativo_var = tk.BooleanVar(
             value=dados.get("ativo", True)
         )
@@ -414,34 +445,60 @@ class Usuarios(ttk.Frame):
 
         ttk.Label(
             formulario,
-            text="Foto do usuário",
+            text="Reconhecimento facial",
             font=("Arial", 10, "bold")
-        ).grid(row=4, column=0, sticky="w", pady=(18, 7))
+        ).grid(
+            row=4,
+            column=0,
+            sticky="w",
+            pady=(18, 7)
+        )
 
-        foto_frame = ttk.Frame(formulario)
-        foto_frame.grid(row=5, column=0, sticky="ew")
+        facial_frame = ttk.Frame(formulario)
+        facial_frame.grid(row=5, column=0, sticky="ew")
 
-        foto_frame.columnconfigure(0, weight=1)
+        self.status_facial = tk.StringVar(
+            value="Nenhuma amostra capturada"
+        )
 
-        ttk.Entry(
-            foto_frame,
-            textvariable=self.foto_var
-        ).grid(row=0, column=0, sticky="ew", ipady=6)
+        ttk.Label(
+            facial_frame,
+            textvariable=self.status_facial
+        ).pack(side="left", fill="x", expand=True)
 
         ttk.Button(
-            foto_frame,
-            text="Selecionar foto",
-            command=self.selecionar_foto
-        ).grid(row=0, column=1, padx=(10, 0))
+            facial_frame,
+            text="Abrir webcam",
+            command=self.abrir_captura_facial
+        ).pack(side="right")
+
+        if usuario_id:
+            quantidade = len(listar_vetores_faciais(usuario_id))
+
+            ttk.Label(
+                formulario,
+                text=f"Amostras atualmente cadastradas: {quantidade}",
+                foreground="#777777"
+            ).grid(
+                row=6,
+                column=0,
+                sticky="w",
+                pady=(8, 0)
+            )
 
         ttk.Checkbutton(
             formulario,
             text="Usuário ativo",
             variable=self.ativo_var
-        ).grid(row=6, column=0, sticky="w", pady=20)
+        ).grid(
+            row=7,
+            column=0,
+            sticky="w",
+            pady=20
+        )
 
         botoes = ttk.Frame(formulario)
-        botoes.grid(row=7, column=0, sticky="e", pady=20)
+        botoes.grid(row=8, column=0, sticky="e", pady=20)
 
         ttk.Button(
             botoes,
@@ -483,28 +540,371 @@ class Usuarios(ttk.Frame):
             ipady=7
         )
 
-    def selecionar_foto(self):
-        caminho = filedialog.askopenfilename(
-            title="Selecionar foto do usuário",
-            filetypes=[
-                ("Imagens", "*.png *.jpg *.jpeg *.webp"),
-                ("Todos os arquivos", "*.*")
-            ]
+    def abrir_captura_facial(self):
+        if self.camera_aberta:
+            return
+
+        try:
+            self.camera = cv2.VideoCapture(0)
+
+            if not self.camera.isOpened():
+                self.camera.release()
+                self.camera = None
+                messagebox.showerror(
+                    "Webcam",
+                    "Não foi possível acessar a webcam."
+                )
+                return
+
+            self.camera_aberta = True
+
+            self.janela_camera = tk.Toplevel(self)
+            self.janela_camera.title("Captura facial")
+            self.janela_camera.geometry("760x650")
+            self.janela_camera.resizable(False, False)
+            self.janela_camera.transient(self.winfo_toplevel())
+            self.janela_camera.protocol(
+                "WM_DELETE_WINDOW",
+                self.fechar_captura_facial
+            )
+
+            container = ttk.Frame(self.janela_camera, padding=15)
+            container.pack(fill="both", expand=True)
+
+            self.preview_camera = ttk.Label(container)
+            self.preview_camera.pack(fill="both", expand=True)
+
+            self.contador_amostras = tk.StringVar(
+                value=f"Amostras capturadas: {len(self.vetores_capturados)}/5"
+            )
+
+            ttk.Label(
+                container,
+                textvariable=self.contador_amostras,
+                font=("Arial", 11, "bold")
+            ).pack(pady=10)
+
+            self.status_camera = tk.StringVar(
+                value="Posicione seu rosto diante da câmera."
+            )
+
+            ttk.Label(
+                container,
+                textvariable=self.status_camera
+            ).pack(pady=5)
+
+            botoes = ttk.Frame(container)
+            botoes.pack(pady=10)
+
+            ttk.Button(
+                botoes,
+                text="Capturar amostra",
+                command=self.capturar_amostra
+            ).pack(side="left", padx=5)
+
+            ttk.Button(
+                botoes,
+                text="Finalizar captura",
+                command=self.fechar_captura_facial
+            ).pack(side="left", padx=5)
+
+            self.atualizar_camera()
+
+        except Exception as erro:
+            self.fechar_captura_facial()
+
+            messagebox.showerror(
+                "Erro",
+                f"Não foi possível iniciar a webcam:\n{erro}"
+            )
+
+    def atualizar_camera(self):
+        if (
+            not self.camera_aberta
+            or self.camera is None
+            or self.janela_camera is None
+            or not self.janela_camera.winfo_exists()
+        ):
+            return
+
+        sucesso, frame = self.camera.read()
+
+        if not sucesso:
+            self.status_camera.set("Não foi possível obter imagem da câmera.")
+            self.camera_after_id = self.janela_camera.after(
+                100,
+                self.atualizar_camera
+            )
+            return
+
+        self.ultimo_frame = frame.copy()
+
+        imagem_cinza = cv2.cvtColor(
+            frame,
+            cv2.COLOR_BGR2GRAY
         )
 
-        if caminho:
-            self.foto_var.set(caminho)
+        rostos = face_cascade.detectMultiScale(
+            imagem_cinza,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(100, 100)
+        )
+
+        rosto_valido = False
+
+        for (x, y, largura, altura) in rostos:
+            roi_olhos = imagem_cinza[
+                y:y + altura,
+                x:x + largura
+            ]
+
+            olhos = eye_cascade.detectMultiScale(
+                roi_olhos,
+                scaleFactor=1.1,
+                minNeighbors=5,
+                minSize=(15, 15)
+            )
+
+            cor = (0, 200, 0) if len(olhos) >= 2 else (0, 165, 255)
+
+            cv2.rectangle(
+                frame,
+                (x, y),
+                (x + largura, y + altura),
+                cor,
+                2
+            )
+
+            for (ex, ey, ew, eh) in olhos:
+                cv2.rectangle(
+                    frame,
+                    (x + ex, y + ey),
+                    (x + ex + ew, y + ey + eh),
+                    (255, 0, 0),
+                    1
+                )
+
+            if len(olhos) >= 2:
+                rosto_valido = True
+
+        if rosto_valido:
+            self.status_camera.set(
+                "Rosto e olhos detectados. Você pode capturar."
+            )
+        elif len(rostos):
+            self.status_camera.set(
+                "Mantenha os olhos visíveis diante da câmera."
+            )
+        else:
+            self.status_camera.set(
+                "Nenhum rosto detectado."
+            )
+
+        frame_rgb = cv2.cvtColor(
+            frame,
+            cv2.COLOR_BGR2RGB
+        )
+
+        imagem = Image.fromarray(frame_rgb)
+        imagem.thumbnail((720, 480))
+
+        foto = ImageTk.PhotoImage(imagem)
+
+        self.preview_camera.configure(image=foto)
+        self.preview_camera.image = foto
+
+        self.camera_after_id = self.janela_camera.after(
+            30,
+            self.atualizar_camera
+        )
+
+    def extrair_embedding(self, frame):
+        imagem_cinza = cv2.cvtColor(
+            frame,
+            cv2.COLOR_BGR2GRAY
+        )
+
+        rostos = face_cascade.detectMultiScale(
+            imagem_cinza,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(100, 100)
+        )
+
+        if len(rostos) != 1:
+            raise ValueError(
+                "Mantenha apenas um rosto visível na câmera."
+            )
+
+        x, y, largura, altura = rostos[0]
+
+        roi_olhos = imagem_cinza[
+            y:y + altura,
+            x:x + largura
+        ]
+
+        olhos = eye_cascade.detectMultiScale(
+            roi_olhos,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(15, 15)
+        )
+
+        if len(olhos) < 2:
+            raise ValueError(
+                "Não foi possível detectar os dois olhos."
+            )
+
+        modelo = obter_modelo_facial()
+        faces = modelo.get(frame)
+
+        if not faces:
+            raise ValueError(
+                "O modelo facial não conseguiu reconhecer o rosto."
+            )
+
+        centro_x = x + largura / 2
+        centro_y = y + altura / 2
+
+        def distancia(face):
+            esquerda, superior, direita, inferior = face.bbox
+
+            face_x = (esquerda + direita) / 2
+            face_y = (superior + inferior) / 2
+
+            return (
+                (face_x - centro_x) ** 2
+                + (face_y - centro_y) ** 2
+            )
+
+        face = min(faces, key=distancia)
+
+        embedding = np.asarray(
+            face.normed_embedding,
+            dtype=np.float32
+        )
+
+        if embedding.shape != (512,):
+            raise ValueError(
+                "O modelo retornou um vetor facial inválido."
+            )
+
+        if not np.all(np.isfinite(embedding)):
+            raise ValueError(
+                "O vetor facial contém valores inválidos."
+            )
+
+        norma = np.linalg.norm(embedding)
+
+        if norma == 0:
+            raise ValueError(
+                "Não foi possível normalizar o vetor facial."
+            )
+
+        return embedding / norma
+
+    def capturar_amostra(self):
+        if self.ultimo_frame is None:
+            return
+
+        if len(self.vetores_capturados) >= 5:
+            self.status_camera.set(
+                "Limite de 5 amostras atingido."
+            )
+            return
+
+        try:
+            embedding = self.extrair_embedding(
+                self.ultimo_frame.copy()
+            )
+
+            self.vetores_capturados.append(embedding)
+
+            quantidade = len(self.vetores_capturados)
+
+            self.contador_amostras.set(
+                f"Amostras capturadas: {quantidade}/5"
+            )
+
+            self.status_camera.set(
+                f"Amostra {quantidade} capturada com sucesso."
+            )
+
+        except Exception as erro:
+            self.status_camera.set(str(erro))
+
+    def fechar_captura_facial(self):
+        self.camera_aberta = False
+
+        if self.camera_after_id and self.janela_camera:
+            try:
+                self.janela_camera.after_cancel(
+                    self.camera_after_id
+                )
+            except tk.TclError:
+                pass
+
+        self.camera_after_id = None
+
+        if self.camera is not None:
+            self.camera.release()
+            self.camera = None
+
+        if self.janela_camera is not None:
+            try:
+                if self.janela_camera.winfo_exists():
+                    self.janela_camera.destroy()
+            except tk.TclError:
+                pass
+
+        self.janela_camera = None
+        self.preview_camera = None
+        self.ultimo_frame = None
+
+        if hasattr(self, "status_facial"):
+            try:
+                if self.winfo_exists():
+                    quantidade = len(self.vetores_capturados)
+
+                    self.status_facial.set(
+                        f"{quantidade} amostra(s) capturada(s)"
+                        if quantidade
+                        else "Nenhuma amostra capturada"
+                    )
+            except tk.TclError:
+                pass
 
     def salvar_usuario(self):
         nome = self.nome_var.get().strip()
         matricula = self.matricula_var.get().strip()
-        foto = self.foto_var.get().strip() or None
         ativo = self.ativo_var.get()
 
         if not nome or not matricula:
             messagebox.showwarning(
                 "Campos obrigatórios",
                 "Preencha o nome e a matrícula."
+            )
+            return
+
+        if self.camera_aberta:
+            messagebox.showwarning(
+                "Captura em andamento",
+                "Finalize a captura da webcam antes de salvar."
+            )
+            return
+
+        if not self.usuario_id and len(self.vetores_capturados) < 3:
+            messagebox.showwarning(
+                "Reconhecimento facial",
+                "Capture pelo menos 3 amostras faciais antes de cadastrar."
+            )
+            return
+
+        if self.vetores_capturados and len(self.vetores_capturados) < 3:
+            messagebox.showwarning(
+                "Reconhecimento facial",
+                "Capture pelo menos 3 amostras para substituir os vetores existentes."
             )
             return
 
@@ -521,18 +921,33 @@ class Usuarios(ttk.Frame):
                     )
                     return
 
+                usuario.nome = nome
+                usuario.matricula = matricula
+                usuario.ativo = ativo
+
+                sessao.commit()
+                usuario_id = usuario.id
+
+                if self.vetores_capturados:
+                    excluir_vetores_faciais(usuario_id)
+
+                    for vetor in self.vetores_capturados:
+                        salvar_vetor_facial(
+                            usuario_id,
+                            vetor
+                        )
+
             else:
-                usuario = Usuario()
-                sessao.add(usuario)
+                sessao.close()
+                sessao = None
 
-            usuario.nome = nome
-            usuario.matricula = matricula
-            usuario.foto = foto
-            usuario.ativo = ativo
+                usuario = cadastrar_usuario(
+                    nome,
+                    matricula,
+                    vetores=self.vetores_capturados
+                )
 
-            sessao.commit()
-
-            usuario_id = usuario.id
+                usuario_id = usuario.id
 
             messagebox.showinfo(
                 "Sucesso",
@@ -542,7 +957,8 @@ class Usuarios(ttk.Frame):
             )
 
         except IntegrityError:
-            sessao.rollback()
+            if sessao:
+                sessao.rollback()
 
             messagebox.showerror(
                 "Matrícula duplicada",
@@ -551,7 +967,8 @@ class Usuarios(ttk.Frame):
             return
 
         except Exception as erro:
-            sessao.rollback()
+            if sessao:
+                sessao.rollback()
 
             messagebox.showerror(
                 "Erro",
@@ -560,6 +977,8 @@ class Usuarios(ttk.Frame):
             return
 
         finally:
-            sessao.close()
+            if sessao:
+                sessao.close()
 
+        self.vetores_capturados = []
         self.mostrar_visualizacao(usuario_id)

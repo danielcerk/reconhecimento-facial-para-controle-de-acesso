@@ -1,6 +1,7 @@
 
 import tkinter as tk
 from tkinter import ttk, messagebox
+import time
 
 import cv2
 
@@ -21,7 +22,7 @@ class Catraca(ttk.Frame):
         self.servico = AccessService()
 
         self.ultimo_processamento = 0
-        self.intervalo_processamento = 500
+        self.intervalo_processamento = 0.5
 
         self.criar_interface()
 
@@ -87,15 +88,16 @@ class Catraca(ttk.Frame):
             sticky="nsew"
         )
 
-        self.nome_var = tk.StringVar(value="Aguardando identificação")
+        self.nome_var = tk.StringVar(
+            value="Aguardando identificação"
+        )
         self.matricula_var = tk.StringVar(value="-")
-        self.resultado_var = tk.StringVar(value="Aguardando rosto")
+        self.resultado_var = tk.StringVar(
+            value="Aguardando rosto"
+        )
         self.motivo_var = tk.StringVar(value="-")
 
-        ttk.Label(
-            painel,
-            text="Nome"
-        ).pack(anchor="w")
+        ttk.Label(painel, text="Nome").pack(anchor="w")
 
         ttk.Label(
             painel,
@@ -104,20 +106,14 @@ class Catraca(ttk.Frame):
             wraplength=220
         ).pack(anchor="w", pady=(3, 15))
 
-        ttk.Label(
-            painel,
-            text="Matrícula"
-        ).pack(anchor="w")
+        ttk.Label(painel, text="Matrícula").pack(anchor="w")
 
         ttk.Label(
             painel,
             textvariable=self.matricula_var
         ).pack(anchor="w", pady=(3, 15))
 
-        ttk.Label(
-            painel,
-            text="Status"
-        ).pack(anchor="w")
+        ttk.Label(painel, text="Status").pack(anchor="w")
 
         self.resultado_label = ttk.Label(
             painel,
@@ -126,10 +122,7 @@ class Catraca(ttk.Frame):
         )
         self.resultado_label.pack(anchor="w", pady=(3, 15))
 
-        ttk.Label(
-            painel,
-            text="Motivo"
-        ).pack(anchor="w")
+        ttk.Label(painel, text="Motivo").pack(anchor="w")
 
         ttk.Label(
             painel,
@@ -137,26 +130,6 @@ class Catraca(ttk.Frame):
             wraplength=220
         ).pack(anchor="w", pady=(3, 15))
 
-        botoes = ttk.Frame(painel)
-        botoes.pack(fill="x", pady=(20, 0))
-
-        ttk.Button(
-            botoes,
-            text="Iniciar câmera",
-            command=self.iniciar_camera
-        ).pack(fill="x", pady=3)
-
-        ttk.Button(
-            botoes,
-            text="Parar câmera",
-            command=self.parar_camera
-        ).pack(fill="x", pady=3)
-
-        ttk.Button(
-            botoes,
-            text="Atualizar reconhecimento",
-            command=self.atualizar_modelo
-        ).pack(fill="x", pady=3)
 
     def ao_mostrar(self, **kwargs):
         self.iniciar_camera()
@@ -189,10 +162,7 @@ class Catraca(ttk.Frame):
         except Exception as erro:
             self.parar_camera()
 
-            messagebox.showerror(
-                "Erro",
-                str(erro)
-            )
+            messagebox.showerror("Erro", str(erro))
 
     def parar_camera(self):
         self.ativo = False
@@ -224,21 +194,24 @@ class Catraca(ttk.Frame):
             self.after_id = self.after(100, self.atualizar_frame)
             return
 
-        agora = self.winfo_toplevel().tk.call("clock", "milliseconds")
+        agora = time.monotonic()
 
         if agora - self.ultimo_processamento >= self.intervalo_processamento:
             self.ultimo_processamento = agora
 
             try:
                 resultado = self.servico.processar_frame(frame)
-                self.atualizar_resultado(resultado)
+
+                if self.atualizar_resultado(resultado):
+                    return
 
             except Exception as erro:
                 self.motivo_var.set(str(erro))
 
-        resultado = self.servico.recognizer.detector.detectar(frame)
+        detector = self.servico.recognizer.detector
+        rostos = detector.detectar(frame)
 
-        for x, y, largura, altura in resultado:
+        for x, y, largura, altura in rostos:
             cv2.rectangle(
                 frame,
                 (x, y),
@@ -257,28 +230,51 @@ class Catraca(ttk.Frame):
         self.camera_label.configure(image=foto, text="")
         self.camera_label.image = foto
 
-        self.after_id = self.after(30, self.atualizar_frame)
+        if self.ativo:
+            self.after_id = self.after(30, self.atualizar_frame)
 
     def atualizar_resultado(self, resultado):
+        status = resultado.get("status")
+
         self.nome_var.set(
-            resultado["nome"] or "Desconhecido"
+            resultado.get("nome") or "Desconhecido"
         )
 
         self.matricula_var.set(
-            resultado["matricula"] or "-"
+            resultado.get("matricula") or "-"
         )
 
-        self.motivo_var.set(resultado["motivo"])
+        self.motivo_var.set(
+            resultado.get("motivo") or "-"
+        )
 
-        if resultado["status"] == "autorizado":
+        if status == "autorizado":
             self.resultado_var.set("ACESSO AUTORIZADO")
             self.resultado_label.configure(foreground="green")
 
-        elif resultado["status"] == "negado":
+            self.app.liberar_acesso()
+            return True
+
+        elif status == "negado":
             self.resultado_var.set("ACESSO NEGADO")
             self.resultado_label.configure(foreground="red")
 
-        elif resultado["rosto"] is not None:
+        elif status in ("cadastro_administrador", "cadastro_admin"):
+            self.nome_var.set(
+                resultado.get("nome") or "Administrador"
+            )
+
+            self.matricula_var.set("0001")
+            self.resultado_var.set("CADASTRO INICIAL")
+
+            self.motivo_var.set(
+                "Primeiro acesso. Administrador precisa cadastrar "
+                "seus dados faciais."
+            )
+
+            self.resultado_label.configure(foreground="blue")
+
+        elif resultado.get("rosto") is not None:
             self.resultado_var.set("NÃO RECONHECIDO")
             self.resultado_label.configure(foreground="red")
 
@@ -286,7 +282,11 @@ class Catraca(ttk.Frame):
             self.nome_var.set("Aguardando identificação")
             self.matricula_var.set("-")
             self.resultado_var.set("Aguardando rosto")
+            self.motivo_var.set("-")
+
             self.resultado_label.configure(foreground="gray")
+
+        return False
 
     def atualizar_modelo(self):
         try:
