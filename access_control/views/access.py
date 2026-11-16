@@ -19,7 +19,7 @@ class Catraca(ttk.Frame):
         self.ativo = False
         self.after_id = None
 
-        self.servico = AccessService()
+        self.servico = None
 
         self.ultimo_processamento = 0
         self.intervalo_processamento = 0.5
@@ -142,6 +142,11 @@ class Catraca(ttk.Frame):
             return
 
         try:
+            self.status_camera.config(text="Inicializando reconhecimento...")
+
+            if self.servico is None:
+                self.servico = AccessService()
+
             self.camera = cv2.VideoCapture(0)
 
             if not self.camera.isOpened():
@@ -290,6 +295,9 @@ class Catraca(ttk.Frame):
 
     def atualizar_modelo(self):
         try:
+            if self.servico is None:
+                self.servico = AccessService()
+
             resultado = self.servico.reconstruir_modelo()
 
             messagebox.showinfo(

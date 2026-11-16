@@ -25,8 +25,8 @@ class App(tk.Tk):
         self.criar_layout()
         self.registrar_telas()
 
-        # Verifica se o administrador já possui face cadastrada
-        self.verificar_configuracao_inicial()
+        # Verifica a configuração após a interface estar pronta.
+        self.after(100, self.verificar_configuracao_inicial)
 
     def configurar_estilos(self):
         style = ttk.Style(self)
@@ -142,7 +142,16 @@ class App(tk.Tk):
     def verificar_configuracao_inicial(self):
         from access_control.db import obter_sessao, Usuario
 
-        recognizer = self.frames["catraca"].servico.recognizer
+        # Exibe a catraca para permitir que ao_mostrar()
+        # inicialize o AccessService sob demanda.
+        self.mostrar_tela("catraca")
+
+        catraca = self.frames["catraca"]
+
+        if catraca.servico is None:
+            return
+
+        recognizer = catraca.servico.recognizer
 
         with obter_sessao() as db:
             administrador = (
@@ -153,6 +162,7 @@ class App(tk.Tk):
 
             if administrador is None:
                 self.modo_configuracao = True
+                self.atualizar_menu()
                 self.mostrar_tela("usuarios")
                 return
 
@@ -164,6 +174,7 @@ class App(tk.Tk):
 
         if not possui_vetor:
             self.modo_configuracao = True
+            self.atualizar_menu()
 
             self.mostrar_tela(
                 "usuarios",
@@ -172,7 +183,7 @@ class App(tk.Tk):
 
             return
 
-        # Administrador já possui cadastro facial
+        # Administrador já possui cadastro facial.
         self.modo_configuracao = False
 
         self.atualizar_menu()
@@ -227,7 +238,12 @@ class App(tk.Tk):
 
             administrador_id = administrador.id
 
-        recognizer = self.frames["catraca"].servico.recognizer
+        catraca = self.frames["catraca"]
+
+        if catraca.servico is None:
+            return False
+
+        recognizer = catraca.servico.recognizer
 
         possui_vetor = recognizer.possui_vetores_usuario(
             administrador_id
@@ -236,13 +252,15 @@ class App(tk.Tk):
         if not possui_vetor:
             return False
 
-        # Atualiza o modelo facial
+        # Atualiza o modelo facial.
         recognizer.carregar_modelo()
 
         self.administrador_id = administrador_id
         self.modo_configuracao = False
 
-        # Mantém a catraca como tela inicial de operação
+        self.atualizar_menu()
+
+        # Mantém a catraca como tela inicial de operação.
         self.mostrar_tela("catraca")
 
         return True
@@ -267,7 +285,6 @@ class App(tk.Tk):
         self.acesso_liberado = True
 
         self.atualizar_menu()
-
         self.mostrar_tela("dashboard")
 
         print("Acesso ao sistema liberado!")

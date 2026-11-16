@@ -947,7 +947,7 @@ class Usuarios(ttk.Frame):
                     vetores=self.vetores_capturados
                 )
 
-                usuario_id = usuario.id
+                usuario_id = usuario
 
             messagebox.showinfo(
                 "Sucesso",
