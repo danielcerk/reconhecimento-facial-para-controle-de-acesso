@@ -1,53 +1,57 @@
-# Reconhecimento Facial OpenCV para controle de acesso
+Reconhecimento facial para controle de acesso
 
-## Começando
+Aplicação desktop em Python que simula o controle de acesso de uma catraca. Usa a câmera para detectar e reconhecer rostos, mantém usuários e registros de acesso em um banco SQLite e oferece telas de catraca, usuários e painel.
 
-Primeiro será necessário realizar a detecção da face e capturar as fotos para o treinamento executando o "dectect_face.py"
-Depois será feito o treinamento das face capturadas com o "treinamento.py"
-E no final você poderá escolher quais dos 3 algoritmos (Eigenface, Fisherface ou LBPH) usará para fazer o reconhecimento
+ Requisitos
 
-### Pré-requisitos
+- Python3
+- Câmera conectada e disponível
+- Dependências listadas em `requirements.txt`
 
-Instale todas as dependências do requirements.txt com PIP
+ Instalação
 
+Abra um terminal na pasta do projeto e crie um ambiente virtual:
 
-### Instalação
-
-Crie um virtual env para empacotar suas libs Python
-
-```
-python -m venv venv
+```bash
+python -m venv .venv
 ```
 
-Ative sua virtual env
+Ative o ambiente:
 
-```
-source venv/bin/active
-```
-
-Use o PIP, gerenciador de pacotes do Python para instalar todos os requisitos
-
-```
-pip install -r requirements.txt
+```powershell
+ Windows PowerShell
+.venv\Scripts\Activate.ps1
 ```
 
-## Uso do programa
-
-1 - Primeiro faça as capturas salvando as imagens das faces detectadas:
-
+```bash
+ macOS ou Linux
+source .venv/bin/activate
 ```
-python detect_face.py
-```
-digite um numero para ser o identificador da face e clique na tecla "q" para salvar a imagem da face detectada.
 
+Instale as dependências:
 
-2 - Faça o apredizado das faces detectadas:
+```bash
+python -m pip install -r requirements.txt
+```
 
-```
-python treinamento.py
-```
-3 - Execute o reconhecedor facil
+ Como executar
 
+Na pasta principal do projeto, rode:
+
+```bash
+python main.py
 ```
-python reconhecedor_eigenfaces.py || python reconhecedor_fisherfaces.py || python reconhecedor_lbph.py
-```
+
+Na primeira execução, o programa cria o banco `sistema_catraca.db` e inicializa o usuário administrador. Siga a tela de configuração para cadastrar os dados e as imagens faciais do administrador. Depois, use a tela de acesso à catraca para testar o reconhecimento. O banco é criado localmente quando o programa é iniciado.
+
+ Estrutura do projeto
+
+- `main.py`: inicializa o banco, prepara o serviço de reconhecimento e abre a interface.
+- `access_control/`: interface gráfica, regras de acesso e persistência dos dados.
+- `recognizer/`: detecção e reconhecimento facial.
+- `recognizer/cascades/`: classificador Haar usado na detecção inicial de rostos.
+- `requirements.txt`: dependências Python.
+
+ Observações
+
+O reconhecimento usa o modelo `buffalo_l` do InsightFace com execução em CPU. Na primeira inicialização, o InsightFace pode precisar baixar os arquivos do modelo. O sistema armazena os vetores faciais e o histórico de acesso no banco SQLite local.
